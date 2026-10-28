@@ -1,0 +1,54 @@
+/* ============================================
+   NS Train Info App – Global Styles
+   ============================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --ns-blue: #003082;
+  --ns-blue-light: #0050c8;
+  --ns-yellow: #f5c400;
+  --ns-yellow-dim: #c99f00;
+
+  --bg: #0a0f1e;
+  --surface: #111827;
+  --surface-raised: #1a2235;
+  --border: rgba(255,255,255,0.08);
+  --border-strong: rgba(255,255,255,0.15);
+
+  --text-primary: #f0f4ff;
+  --text-secondary: #8b9ac5;
+  --text-muted: #4a5568;
+
+  --green: #22c55e;
+  --yellow: #f5c400;
+  --red: #ef4444;
+  --orange: #f97316;
+
+  --radius: 14px;
+  --radius-sm: 8px;
+  --font: 'Inter', system-ui, -apple-system, sans-serif;
+}
+
+html, body {
+  min-height: 100dvh;
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: var(--font);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
