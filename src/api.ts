@@ -1,5 +1,4 @@
 import type {
-  NSDeparturesResponse,
   NSDisruptionsResponse,
   NSDisruption,
   TrainInfo,
@@ -8,15 +7,42 @@ import type {
 
 const PROXY = '/.netlify/functions/ns-proxy';
 
+/** NS Trip response types */
+interface NSTripLegOrigin {
+  plannedDateTime: string;
+  actualDateTime?: string;
+  plannedTrack?: string;
+  actualTrack?: string;
+}
+
+interface NSTripLeg {
+  origin: NSTripLegOrigin;
+  product?: {
+    categoryCode: string;
+    number: string;
+    longCategoryName: string;
+  };
+}
+
+interface NSTrip {
+  status: string;        // NORMAL, DISRUPTION, CANCELLED, etc.
+  cancelled?: boolean;
+  legs: NSTripLeg[];
+  messages?: Array<{ message: string; type: string }>;
+}
+
+interface NSTripsResponse {
+  trips?: NSTrip[];
+}
+
 /** Determines the "next morning" date from the user's local time.
  *  If it's before 09:00 today, use today; otherwise use tomorrow. */
 export function getTargetDate(): Date {
   const now = new Date();
   const candidate = new Date(now);
-  candidate.setHours(9, 0, 0, 0); // 09:00 today
+  candidate.setHours(9, 0, 0, 0);
 
   if (now >= candidate) {
-    // We're past the window, aim for tomorrow
     candidate.setDate(candidate.getDate() + 1);
   }
 
@@ -44,52 +70,69 @@ function calcDelay(planned: string, actual?: string): number {
   return Math.round(diff);
 }
 
-/** Fetch departures from Utrecht Centraal (station code: UT) in the 08:00-09:00 window */
-async function fetchDepartures(targetDate: Date): Promise<TrainInfo[]> {
-  // We request departures around 08:00 on the target date
-  const dateTimeParam = new Date(targetDate);
-  dateTimeParam.setHours(7, 55, 0, 0); // a bit before 08:00
+/**
+ * Fetch trips from Utrecht Centraal to Amsterdam Centraal
+ * using the /v3/trips endpoint which supports future date queries.
+ */
+async function fetchTrips(targetDate: Date): Promise<TrainInfo[]> {
+  // Build datetime for 08:00 on the target morning
+  const dt = new Date(targetDate);
+  dt.setHours(8, 0, 0, 0);
+
+  // Format as local ISO string (without Z, so NS interprets it as local time)
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const dateTimeLocal = `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}T${pad(dt.getHours())}:${pad(dt.getMinutes())}:00`;
 
   const params = new URLSearchParams({
-    path: 'v2/departures',
-    station: 'UT',
-    dateTime: dateTimeParam.toISOString(),
-    maxJourneys: '30',
+    path: 'v3/trips',
+    fromStation: 'Utrecht Centraal',
+    toStation: 'Amsterdam Centraal',
+    dateTime: dateTimeLocal,
+    searchForArrival: 'false',
+    originWalk: '0',
+    destinationWalk: '0',
   });
 
   const res = await fetch(`${PROXY}?${params}`);
-  if (!res.ok) throw new Error(`Departures API fout: ${res.status}`);
+  if (!res.ok) throw new Error(`Trips API fout: ${res.status}`);
 
-  const data: NSDeparturesResponse = await res.json();
-  const departures = data?.payload?.departures ?? [];
+  const data: NSTripsResponse = await res.json();
+  const trips = data?.trips ?? [];
 
-  // Filter: direction Amsterdam, between 08:00 and 09:00
+  // Filter to only show trips departing between 08:00 and 09:00
   const windowStart = new Date(targetDate);
   windowStart.setHours(8, 0, 0, 0);
   const windowEnd = new Date(targetDate);
   windowEnd.setHours(9, 0, 0, 0);
 
-  return departures
-    .filter((dep) => {
-      const planned = new Date(dep.plannedDateTime);
-      const directionMatch =
-        dep.direction.toLowerCase().includes('amsterdam') ||
-        dep.direction.toLowerCase().includes('asd') ||
-        dep.name.toLowerCase().includes('amsterdam');
-      return planned >= windowStart && planned < windowEnd && directionMatch;
+  return trips
+    .filter((trip) => {
+      const firstLeg = trip.legs?.[0];
+      if (!firstLeg) return false;
+      const depTime = new Date(firstLeg.origin.plannedDateTime);
+      return depTime >= windowStart && depTime < windowEnd;
     })
-    .map((dep) => ({
-      plannedTime: toHHMM(dep.plannedDateTime),
-      actualTime: dep.actualDateTime ? toHHMM(dep.actualDateTime) : toHHMM(dep.plannedDateTime),
-      delayMinutes: calcDelay(dep.plannedDateTime, dep.actualDateTime),
-      track: dep.actualTrack ?? dep.plannedTrack ?? '–',
-      trainType: dep.product.categoryCode,
-      cancelled: dep.cancelled,
-      messages: dep.messages?.map((m) => m.message) ?? [],
-    }));
+    .map((trip): TrainInfo => {
+      const leg = trip.legs[0];
+      const origin = leg.origin;
+      const planned = origin.plannedDateTime;
+      const actual = origin.actualDateTime;
+      const delay = calcDelay(planned, actual);
+      const cancelled = trip.cancelled === true || trip.status === 'CANCELLED';
+
+      return {
+        plannedTime: toHHMM(planned),
+        actualTime: actual ? toHHMM(actual) : toHHMM(planned),
+        delayMinutes: delay,
+        track: origin.actualTrack ?? origin.plannedTrack ?? '–',
+        trainType: leg.product?.categoryCode ?? '?',
+        cancelled,
+        messages: trip.messages?.map((m) => m.message).filter(Boolean) ?? [],
+      };
+    });
 }
 
-/** Fetch active disruptions that affect the Utrecht–Amsterdam corridor */
+/** Fetch active disruptions that may affect the Utrecht–Amsterdam corridor */
 async function fetchDisruptions(): Promise<NSDisruption[]> {
   const params = new URLSearchParams({
     path: 'v3/disruptions',
@@ -109,8 +152,8 @@ async function fetchDisruptions(): Promise<NSDisruption[]> {
     return (
       text.includes('utrecht') ||
       text.includes('amsterdam') ||
-      text.includes('ut') ||
-      text.includes('asd')
+      text.includes(' ut ') ||
+      text.includes(' asd ')
     );
   });
 }
@@ -120,7 +163,7 @@ export async function fetchTrainData(): Promise<AppData> {
   const targetDate = getTargetDate();
 
   const [departures, disruptions] = await Promise.all([
-    fetchDepartures(targetDate),
+    fetchTrips(targetDate),
     fetchDisruptions(),
   ]);
 
